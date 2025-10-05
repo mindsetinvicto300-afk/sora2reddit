@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: sora2-radar
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: THREAD_URL
+        value: https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/
+      - key: FETCH_INTERVAL_SECONDS
+        value: 5

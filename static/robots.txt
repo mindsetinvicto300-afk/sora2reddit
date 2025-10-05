@@ -1,0 +1,13 @@
+# robots.txt for Sora2 Radar
+User-agent: *
+Allow: /
+
+# Sitemaps
+Sitemap: https://your-domain.com/sitemap.xml
+
+# Crawl-delay (optional - helps prevent overload)
+Crawl-delay: 1
+
+# Disallow static assets indexing (optional)
+Disallow: /static/*.css
+Disallow: /static/*.js
