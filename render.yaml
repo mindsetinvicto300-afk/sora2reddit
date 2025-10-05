@@ -12,4 +12,4 @@ services:
       - key: THREAD_URL
         value: https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/
       - key: FETCH_INTERVAL_SECONDS
-        value: 5
+        value: 30

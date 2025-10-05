@@ -83,14 +83,25 @@ async def fetch_thread_json(client: httpx.AsyncClient) -> Dict[str, Any]:
     else:
         target_url = url
 
-    response = await client.get(target_url)
-    response.raise_for_status()
-    payload = response.json()
-    if isinstance(payload, list) and payload:
-        return payload[1] if len(payload) > 1 else payload[0]
-    if isinstance(payload, dict):
-        return payload
-    raise HTTPException(status_code=502, detail="Unexpected payload structure from Reddit")
+    # Retry logic for Reddit rate limiting
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await client.get(target_url)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list) and payload:
+                return payload[1] if len(payload) > 1 else payload[0]
+            if isinstance(payload, dict):
+                return payload
+            raise HTTPException(status_code=502, detail="Unexpected payload structure from Reddit")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403 and attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                logger.warning(f"Reddit 403 blocked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+                continue
+            raise
 
 
 def iter_comments(children: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
