@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -77,11 +78,18 @@ def is_valid_candidate(candidate: str) -> bool:
 
 async def fetch_thread_json(client: httpx.AsyncClient) -> Dict[str, Any]:
     url = ensure_json_url(THREAD_URL)
+
+    # Try old.reddit.com first (less restrictive)
+    if "www.reddit.com" in url:
+        url = url.replace("www.reddit.com", "old.reddit.com")
+
     if SCRAPE_DO_TOKEN:
         proxy_url = f"https://api.scrape.do?token={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
         target_url = proxy_url
     else:
-        target_url = url
+        # Use CORS proxy as fallback for cloud environments
+        # This helps bypass Reddit's IP blocking
+        target_url = f"https://api.allorigins.win/raw?url={quote_plus(url)}"
 
     # Retry logic for Reddit rate limiting
     max_retries = 3
@@ -96,9 +104,9 @@ async def fetch_thread_json(client: httpx.AsyncClient) -> Dict[str, Any]:
                 return payload
             raise HTTPException(status_code=502, detail="Unexpected payload structure from Reddit")
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 403 and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
-                logger.warning(f"Reddit 403 blocked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+            if e.response.status_code in (403, 429) and attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 3  # Exponential backoff: 3s, 6s, 9s
+                logger.warning(f"Reddit {e.response.status_code} blocked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
                 await asyncio.sleep(wait_time)
                 continue
             raise
@@ -197,7 +205,12 @@ async def scanner_loop() -> None:
                 await scan_once()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Scanner iteration failed: %s", exc)
-        await asyncio.sleep(FETCH_INTERVAL_SECONDS)
+
+        # Add random jitter to avoid pattern detection
+        jitter = random.uniform(0, 10)
+        sleep_time = FETCH_INTERVAL_SECONDS + jitter
+        logger.info(f"Next scan in {sleep_time:.1f}s")
+        await asyncio.sleep(sleep_time)
 
 
 @app.on_event("startup")
