@@ -36,7 +36,7 @@ MAX_CODES = int(os.getenv("MAX_CODES", "200"))
 
 CODE_PATTERN = re.compile(r"\b[0-9A-Za-z]{6}\b")
 BLACKLIST = {word.upper() for word in DEFAULT_BLACKLIST}
-USER_AGENT = "Sora2InviteScanner/1.0 (+https://github.com/factorylabs)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 app = FastAPI(title="Sora2 Invite Code Scanner", version="1.0.0")
 
@@ -113,8 +113,16 @@ def extract_codes_from_body(body: str) -> List[str]:
 
 async def scan_once() -> List[CodeEntry]:
     global _last_fetch
-    headers = {"User-Agent": USER_AGENT}
-    async with httpx.AsyncClient(timeout=15, headers=headers) as client:
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
         payload = await fetch_thread_json(client)
 
     listing = payload.get("data", {}).get("children", [])
