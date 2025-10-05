@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import random
@@ -84,8 +85,8 @@ async def fetch_thread_json(client: httpx.AsyncClient) -> Dict[str, Any]:
         url = url.replace("www.reddit.com", "old.reddit.com")
 
     if SCRAPE_DO_TOKEN:
-        proxy_url = f"https://api.scrape.do?token={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
-        target_url = proxy_url
+        # ScraperAPI format: http://api.scraperapi.com?api_key=KEY&url=URL
+        target_url = f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
     else:
         # Use CORS proxy as fallback for cloud environments
         # This helps bypass Reddit's IP blocking
@@ -97,7 +98,10 @@ async def fetch_thread_json(client: httpx.AsyncClient) -> Dict[str, Any]:
         try:
             response = await client.get(target_url)
             response.raise_for_status()
-            payload = response.json()
+
+            # Parse JSON response (use .text to handle encoding properly)
+            payload = json.loads(response.text)
+
             if isinstance(payload, list) and payload:
                 return payload[1] if len(payload) > 1 else payload[0]
             if isinstance(payload, dict):
