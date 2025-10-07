@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gzip
 import json
 import logging
 import os
@@ -114,16 +115,33 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
             response = await client.get(target_url, timeout=20)
             response.raise_for_status()
 
+            # Get response content (handles different encodings)
+            content = response.content
+            text = None
+
+            # Try to decompress if gzipped
+            if content and content[:2] == b'\x1f\x8b':  # Gzip magic number
+                try:
+                    text = gzip.decompress(content).decode('utf-8')
+                    logger.info(f"{proxy_name} returned gzipped content, decompressed successfully")
+                except Exception as e:
+                    logger.warning(f"{proxy_name} gzip decompression failed: {e}, trying as-is...")
+                    text = response.text
+            else:
+                text = response.text
+
             # Check if response is empty
-            if not response.text or not response.text.strip():
+            if not text or not text.strip():
                 logger.warning(f"{proxy_name} returned empty response, trying next proxy...")
                 continue
 
-            # Parse JSON response (use .text to handle encoding properly)
+            # Parse JSON response
             try:
-                payload = json.loads(response.text)
+                payload = json.loads(text)
             except json.JSONDecodeError as je:
-                logger.warning(f"{proxy_name} returned invalid JSON (first 100 chars): {response.text[:100]}, trying next proxy...")
+                # Show readable preview (escape binary chars)
+                preview = text[:100].encode('unicode_escape').decode('ascii')
+                logger.warning(f"{proxy_name} returned invalid JSON, preview: {preview}, trying next proxy...")
                 continue
 
             if isinstance(payload, list) and payload:
