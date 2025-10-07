@@ -91,36 +91,50 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
     if "www.reddit.com" in url:
         url = url.replace("www.reddit.com", "old.reddit.com")
 
-    if SCRAPE_DO_TOKEN:
-        # ScraperAPI format: http://api.scraperapi.com?api_key=KEY&url=URL
-        target_url = f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
-    else:
-        # Use CORS proxy as fallback for cloud environments
-        # This helps bypass Reddit's IP blocking
-        target_url = f"https://api.allorigins.win/raw?url={quote_plus(url)}"
+    # Try multiple proxy methods in order of preference
+    proxy_methods = []
 
-    # Retry logic for Reddit rate limiting
-    max_retries = 3
-    for attempt in range(max_retries):
+    if SCRAPE_DO_TOKEN:
+        # Try ScraperAPI first if token is provided
+        proxy_methods.append(("ScraperAPI", f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"))
+
+    # Always have CORS proxy as fallback
+    proxy_methods.extend([
+        ("AllOrigins", f"https://api.allorigins.win/raw?url={quote_plus(url)}"),
+        ("Direct", url),  # Try direct access as last resort
+    ])
+
+    last_error = None
+    for proxy_name, target_url in proxy_methods:
         try:
-            response = await client.get(target_url)
+            logger.info(f"Trying {proxy_name} proxy for {url[:80]}...")
+            response = await client.get(target_url, timeout=20)
             response.raise_for_status()
 
             # Parse JSON response (use .text to handle encoding properly)
             payload = json.loads(response.text)
 
             if isinstance(payload, list) and payload:
+                logger.info(f"✓ {proxy_name} proxy succeeded")
                 return payload[1] if len(payload) > 1 else payload[0]
             if isinstance(payload, dict):
+                logger.info(f"✓ {proxy_name} proxy succeeded")
                 return payload
-            raise HTTPException(status_code=502, detail="Unexpected payload structure from Reddit")
+            logger.warning(f"{proxy_name} returned unexpected structure, trying next proxy...")
+            continue
         except httpx.HTTPStatusError as e:
-            if e.response.status_code in (403, 429) and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 3  # Exponential backoff: 3s, 6s, 9s
-                logger.warning(f"Reddit {e.response.status_code} blocked, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
-                continue
-            raise
+            logger.warning(f"{proxy_name} failed with {e.response.status_code}, trying next proxy...")
+            last_error = e
+            continue
+        except Exception as e:
+            logger.warning(f"{proxy_name} failed with {type(e).__name__}: {e}, trying next proxy...")
+            last_error = e
+            continue
+
+    # All proxy methods failed
+    if last_error:
+        raise last_error
+    raise HTTPException(status_code=502, detail="All proxy methods failed")
 
 
 def iter_comments(children: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
