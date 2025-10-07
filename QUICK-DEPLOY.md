@@ -186,8 +186,20 @@ Dashboard → Your Service → Environment → Add Environment Variable
 
 Common variables:
 ```
-THREAD_URL=https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/
+# Multiple Reddit sources (comma-separated)
+THREAD_URLS=https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week
+
+# Twitter/X sources (optional, requires SCRAPE_DO_TOKEN)
+TWITTER_SEARCH_URLS=https://x.com/search?q=sora+invite+code&f=live
+
+# ScraperAPI token for bypassing restrictions (optional)
+SCRAPE_DO_TOKEN=your_scraperapi_token_here
+
+# Scan interval
 FETCH_INTERVAL_SECONDS=5
+
+# Maximum codes to store
+MAX_CODES=200
 ```
 
 ---

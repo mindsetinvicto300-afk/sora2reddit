@@ -28,10 +28,17 @@ logging.basicConfig(level=logging.INFO)
 ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT_DIR / "static"
 
-THREAD_URL = os.getenv(
-    "THREAD_URL",
-    "https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread",
-)
+# Support multiple sources - can be comma-separated URLs
+THREAD_URLS = os.getenv(
+    "THREAD_URLS",
+    "https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread,"
+    "https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,"
+    "https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week"
+).split(",")
+TWITTER_SEARCH_URLS = os.getenv(
+    "TWITTER_SEARCH_URLS",
+    ""  # Twitter requires auth, so disabled by default
+).split(",") if os.getenv("TWITTER_SEARCH_URLS") else []
 FETCH_INTERVAL_SECONDS = float(os.getenv("FETCH_INTERVAL_SECONDS", "5"))
 SCRAPE_DO_TOKEN = os.getenv("SCRAPE_DO_TOKEN")
 MAX_CODES = int(os.getenv("MAX_CODES", "200"))
@@ -77,8 +84,8 @@ def is_valid_candidate(candidate: str) -> bool:
     return True
 
 
-async def fetch_thread_json(client: httpx.AsyncClient) -> Dict[str, Any]:
-    url = ensure_json_url(THREAD_URL)
+async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
+    url = ensure_json_url(url)
 
     # Try old.reddit.com first (less restrictive)
     if "www.reddit.com" in url:
@@ -134,6 +141,83 @@ def extract_codes_from_body(body: str) -> List[str]:
     return matches
 
 
+async def scan_reddit_source(client: httpx.AsyncClient, url: str, now: float) -> List[CodeEntry]:
+    """Scan a single Reddit source for codes."""
+    new_codes: list[CodeEntry] = []
+
+    try:
+        payload = await fetch_thread_json(client, url)
+        listing = payload.get("data", {}).get("children", [])
+
+        for comment in iter_comments(listing):
+            body = comment.get("body")
+            if not body:
+                continue
+            codes = extract_codes_from_body(body)
+            if not codes:
+                continue
+
+            created_utc = float(comment.get("created_utc") or now)
+            permalink = comment.get("permalink")
+            if permalink and permalink.startswith("/"):
+                permalink = f"https://www.reddit.com{permalink}"
+
+            for code in codes:
+                if code in _codes:
+                    continue
+                entry = CodeEntry(
+                    code=code,
+                    comment_id=comment.get("id", ""),
+                    author=comment.get("author"),
+                    permalink=permalink or "",
+                    created_utc=created_utc,
+                    first_seen=now,
+                )
+                _codes[code] = entry
+                new_codes.append(entry)
+    except Exception as exc:
+        logger.warning(f"Failed to scan Reddit source {url}: {exc}")
+
+    return new_codes
+
+
+async def scan_twitter_source(client: httpx.AsyncClient, url: str, now: float) -> List[CodeEntry]:
+    """Scan Twitter/X for codes (requires ScraperAPI or similar)."""
+    new_codes: list[CodeEntry] = []
+
+    if not SCRAPE_DO_TOKEN:
+        logger.warning("Twitter scanning requires SCRAPE_DO_TOKEN")
+        return new_codes
+
+    try:
+        # Twitter requires more sophisticated scraping
+        target_url = f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
+        response = await client.get(target_url)
+        response.raise_for_status()
+
+        # Extract codes from Twitter HTML/JSON
+        text = response.text
+        codes = extract_codes_from_body(text)
+
+        for code in codes:
+            if code in _codes:
+                continue
+            entry = CodeEntry(
+                code=code,
+                comment_id="",
+                author="twitter",
+                permalink=url,
+                created_utc=now,
+                first_seen=now,
+            )
+            _codes[code] = entry
+            new_codes.append(entry)
+    except Exception as exc:
+        logger.warning(f"Failed to scan Twitter source {url}: {exc}")
+
+    return new_codes
+
+
 async def scan_once() -> List[CodeEntry]:
     global _last_fetch
     headers = {
@@ -145,39 +229,28 @@ async def scan_once() -> List[CodeEntry]:
         "Connection": "keep-alive",
         "Upgrade-Insecure-Requests": "1",
     }
-    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
-        payload = await fetch_thread_json(client)
 
-    listing = payload.get("data", {}).get("children", [])
     new_codes: list[CodeEntry] = []
     now = time.time()
 
-    for comment in iter_comments(listing):
-        body = comment.get("body")
-        if not body:
-            continue
-        codes = extract_codes_from_body(body)
-        if not codes:
-            continue
-
-        created_utc = float(comment.get("created_utc" or now))
-        permalink = comment.get("permalink")
-        if permalink and permalink.startswith("/"):
-            permalink = f"https://www.reddit.com{permalink}"
-
-        for code in codes:
-            if code in _codes:
+    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
+        # Scan all Reddit sources
+        for thread_url in THREAD_URLS:
+            thread_url = thread_url.strip()
+            if not thread_url:
                 continue
-            entry = CodeEntry(
-                code=code,
-                comment_id=comment.get("id", ""),
-                author=comment.get("author"),
-                permalink=permalink or "",
-                created_utc=created_utc,
-                first_seen=now,
-            )
-            _codes[code] = entry
-            new_codes.append(entry)
+            logger.info(f"Scanning Reddit source: {thread_url}")
+            codes = await scan_reddit_source(client, thread_url, now)
+            new_codes.extend(codes)
+
+        # Scan Twitter sources if configured
+        for twitter_url in TWITTER_SEARCH_URLS:
+            twitter_url = twitter_url.strip()
+            if not twitter_url:
+                continue
+            logger.info(f"Scanning Twitter source: {twitter_url}")
+            codes = await scan_twitter_source(client, twitter_url, now)
+            new_codes.extend(codes)
 
     if new_codes:
         _ordered_codes.extend(new_codes)
@@ -188,6 +261,7 @@ async def scan_once() -> List[CodeEntry]:
             del _ordered_codes[MAX_CODES:]
 
     _last_fetch = time.time()
+    logger.info(f"Scan complete. Found {len(new_codes)} new codes from {len(THREAD_URLS)} sources")
     return new_codes
 
 

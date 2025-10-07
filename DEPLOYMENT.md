@@ -65,8 +65,20 @@ git push -u origin main
 
    Add these if needed:
    ```
-   THREAD_URL = https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/
+   # Multiple Reddit sources (comma-separated)
+   THREAD_URLS = https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week
+
+   # Twitter/X sources (optional, requires SCRAPE_DO_TOKEN)
+   TWITTER_SEARCH_URLS = https://x.com/search?q=sora+invite+code&f=live
+
+   # ScraperAPI token for bypassing IP blocks (optional but recommended)
+   SCRAPE_DO_TOKEN = your_scraperapi_token_here
+
+   # Scan interval in seconds
    FETCH_INTERVAL_SECONDS = 5
+
+   # Maximum codes to store in memory
+   MAX_CODES = 200
    ```
 
 6. **Deploy**
@@ -184,13 +196,15 @@ pip freeze > requirements.txt
 app.mount("/static", StaticFiles(directory="static"), name="static")
 ```
 
-### Reddit API Issues
+### Reddit/Source Issues
 **Issue**: Codes not updating
 
 **Solutions**:
-1. Check `THREAD_URL` environment variable
-2. Verify Reddit thread is still active
-3. Check rate limiting
+1. Check `THREAD_URLS` environment variable (comma-separated list)
+2. Verify Reddit threads are still active
+3. Check rate limiting in logs
+4. Consider adding `SCRAPE_DO_TOKEN` for bypassing IP blocks
+5. Add more sources (Reddit searches, Twitter, etc.)
 
 ---
 
