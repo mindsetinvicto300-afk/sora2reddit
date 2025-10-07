@@ -68,7 +68,8 @@ _scanner_task: asyncio.Task | None = None
 
 
 def ensure_json_url(url: str) -> str:
-    if url.endswith(".json"):
+    # Don't add .json if already present OR if it's a search URL with query params
+    if url.endswith(".json") or ".json?" in url:
         return url
     return f"{url}.json"
 
@@ -98,9 +99,11 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
         # Try ScraperAPI first if token is provided
         proxy_methods.append(("ScraperAPI", f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"))
 
-    # Always have CORS proxy as fallback
+    # Multiple CORS proxy alternatives as fallback
     proxy_methods.extend([
         ("AllOrigins", f"https://api.allorigins.win/raw?url={quote_plus(url)}"),
+        ("ThingProxy", f"https://thingproxy.freeboard.io/fetch/{url}"),
+        ("CorsAnywhere", f"https://cors-anywhere.herokuapp.com/{url}"),
         ("Direct", url),  # Try direct access as last resort
     ])
 
@@ -111,8 +114,17 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
             response = await client.get(target_url, timeout=20)
             response.raise_for_status()
 
+            # Check if response is empty
+            if not response.text or not response.text.strip():
+                logger.warning(f"{proxy_name} returned empty response, trying next proxy...")
+                continue
+
             # Parse JSON response (use .text to handle encoding properly)
-            payload = json.loads(response.text)
+            try:
+                payload = json.loads(response.text)
+            except json.JSONDecodeError as je:
+                logger.warning(f"{proxy_name} returned invalid JSON (first 100 chars): {response.text[:100]}, trying next proxy...")
+                continue
 
             if isinstance(payload, list) and payload:
                 logger.info(f"✓ {proxy_name} proxy succeeded")
