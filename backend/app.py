@@ -29,24 +29,27 @@ logging.basicConfig(level=logging.INFO)
 ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT_DIR / "static"
 
-# Support multiple sources - can be comma-separated URLs
 THREAD_URLS = os.getenv(
     "THREAD_URLS",
-    "https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/"
+    "https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/,"
     "https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,"
     "https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week"
 ).split(",")
-TWITTER_SEARCH_URLS = os.getenv(
-    "TWITTER_SEARCH_URLS",
-    ""  # Twitter requires auth, so disabled by default
-).split(",") if os.getenv("TWITTER_SEARCH_URLS") else []
+TWITTER_SEARCH_URLS = os.getenv("TWITTER_SEARCH_URLS", "").split(",") if os.getenv("TWITTER_SEARCH_URLS") else []
 FETCH_INTERVAL_SECONDS = float(os.getenv("FETCH_INTERVAL_SECONDS", "5"))
 SCRAPE_DO_TOKEN = os.getenv("SCRAPE_DO_TOKEN")
 MAX_CODES = int(os.getenv("MAX_CODES", "200"))
 
 CODE_PATTERN = re.compile(r"\b[0-9A-Za-z]{6}\b")
 BLACKLIST = {word.upper() for word in DEFAULT_BLACKLIST}
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+# User agents rotativos para evitar detecção
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+]
 
 app = FastAPI(title="Sora2 Invite Code Scanner", version="1.0.0")
 
@@ -69,10 +72,20 @@ _scanner_task: asyncio.Task | None = None
 
 
 def ensure_json_url(url: str) -> str:
-    # Don't add .json if already present OR if it's a search URL with query params
+    """Garante que a URL termina com .json"""
+    url = url.strip()
     if url.endswith(".json") or ".json?" in url:
         return url
+    # Remove trailing slash antes de adicionar .json
+    url = url.rstrip("/")
     return f"{url}.json"
+
+
+def normalize_reddit_url(url: str) -> str:
+    """Converte para old.reddit.com que é menos restritivo"""
+    url = url.replace("www.reddit.com", "old.reddit.com")
+    url = url.replace("reddit.com", "old.reddit.com")
+    return ensure_json_url(url)
 
 
 def is_valid_candidate(candidate: str) -> bool:
@@ -87,84 +100,114 @@ def is_valid_candidate(candidate: str) -> bool:
 
 
 async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, Any]:
-    url = ensure_json_url(url)
-
-    # Try old.reddit.com first (less restrictive)
-    if "www.reddit.com" in url:
-        url = url.replace("www.reddit.com", "old.reddit.com")
-
-    # Try multiple proxy methods in order of preference
+    """Busca JSON do Reddit com múltiplos fallbacks"""
+    url = normalize_reddit_url(url)
+    
+    # Lista de métodos de proxy em ordem de preferência
     proxy_methods = []
-
+    
+    # ScraperAPI é a melhor opção se disponível
     if SCRAPE_DO_TOKEN:
-        # Try ScraperAPI first if token is provided
-        proxy_methods.append(("ScraperAPI", f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"))
-
-    # Multiple CORS proxy alternatives as fallback
+        proxy_methods.append(
+            ("ScraperAPI", f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}")
+        )
+    
+    # Proxies CORS como fallback
     proxy_methods.extend([
         ("AllOrigins", f"https://api.allorigins.win/raw?url={quote_plus(url)}"),
         ("ThingProxy", f"https://thingproxy.freeboard.io/fetch/{url}"),
-        ("CorsAnywhere", f"https://cors-anywhere.herokuapp.com/{url}"),
-        ("Direct", url),  # Try direct access as last resort
+        ("CORS-Anywhere", f"https://corsproxy.io/?{quote_plus(url)}"),
     ])
-
+    
+    # Tentar direto como último recurso
+    proxy_methods.append(("Direct", url))
+    
     last_error = None
+    
     for proxy_name, target_url in proxy_methods:
         try:
-            logger.info(f"Trying {proxy_name} proxy for {url[:80]}...")
-            response = await client.get(target_url, timeout=20)
+            # User agent aleatório
+            user_agent = random.choice(USER_AGENTS)
+            headers = {
+                "User-Agent": user_agent,
+                "Accept": "application/json, text/html, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "none",
+            }
+            
+            logger.info(f"Tentando {proxy_name} para {url[:80]}...")
+            
+            response = await client.get(
+                target_url,
+                headers=headers,
+                timeout=20,
+                follow_redirects=True
+            )
             response.raise_for_status()
-
-            # Get response content (handles different encodings)
+            
+            # Processar resposta
             content = response.content
             text = None
-
-            # Try to decompress if gzipped
-            if content and content[:2] == b'\x1f\x8b':  # Gzip magic number
+            
+            # Descomprimir se for gzip
+            if content and content[:2] == b'\x1f\x8b':
                 try:
                     text = gzip.decompress(content).decode('utf-8')
-                    logger.info(f"{proxy_name} returned gzipped content, decompressed successfully")
-                except Exception as e:
-                    logger.warning(f"{proxy_name} gzip decompression failed: {e}, trying as-is...")
+                except Exception:
                     text = response.text
             else:
                 text = response.text
-
-            # Check if response is empty
+            
             if not text or not text.strip():
-                logger.warning(f"{proxy_name} returned empty response, trying next proxy...")
+                logger.warning(f"{proxy_name} retornou resposta vazia")
                 continue
-
-            # Parse JSON response
+            
+            # Parse JSON
             try:
                 payload = json.loads(text)
             except json.JSONDecodeError as je:
-                # Show readable preview (escape binary chars)
-                preview = text[:100].encode('unicode_escape').decode('ascii')
-                logger.warning(f"{proxy_name} returned invalid JSON, preview: {preview}, trying next proxy...")
+                preview = text[:200].encode('unicode_escape').decode('ascii')
+                logger.warning(f"{proxy_name} retornou JSON inválido: {preview}")
                 continue
-
+            
+            # Validar estrutura
             if isinstance(payload, list) and payload:
-                logger.info(f"✓ {proxy_name} proxy succeeded")
+                logger.info(f"✓ {proxy_name} funcionou!")
                 return payload[1] if len(payload) > 1 else payload[0]
-            if isinstance(payload, dict):
-                logger.info(f"✓ {proxy_name} proxy succeeded")
+            elif isinstance(payload, dict):
+                logger.info(f"✓ {proxy_name} funcionou!")
                 return payload
-            logger.warning(f"{proxy_name} returned unexpected structure, trying next proxy...")
-            continue
+            else:
+                logger.warning(f"{proxy_name} retornou estrutura inesperada")
+                continue
+                
         except httpx.HTTPStatusError as e:
-            logger.warning(f"{proxy_name} failed with {e.response.status_code}, trying next proxy...")
+            status = e.response.status_code
+            logger.warning(f"{proxy_name} falhou com {status}")
             last_error = e
+            
+            # Se for 429 (rate limit), esperar um pouco
+            if status == 429:
+                await asyncio.sleep(2)
             continue
+            
         except Exception as e:
-            logger.warning(f"{proxy_name} failed with {type(e).__name__}: {e}, trying next proxy...")
+            logger.warning(f"{proxy_name} falhou: {type(e).__name__}: {str(e)[:100]}")
             last_error = e
             continue
-
-    # All proxy methods failed
+    
+    # Todos os métodos falharam
+    error_msg = f"Todos os proxies falharam para {url[:80]}"
     if last_error:
-        raise last_error
-    raise HTTPException(status_code=502, detail="All proxy methods failed")
+        error_msg += f" - Último erro: {last_error}"
+    logger.error(error_msg)
+    raise HTTPException(status_code=502, detail="Todos os métodos de proxy falharam")
 
 
 def iter_comments(children: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
@@ -186,29 +229,31 @@ def extract_codes_from_body(body: str) -> List[str]:
 
 
 async def scan_reddit_source(client: httpx.AsyncClient, url: str, now: float) -> List[CodeEntry]:
-    """Scan a single Reddit source for codes."""
+    """Escaneia uma fonte do Reddit"""
     new_codes: list[CodeEntry] = []
-
+    
     try:
         payload = await fetch_thread_json(client, url)
         listing = payload.get("data", {}).get("children", [])
-
+        
         for comment in iter_comments(listing):
             body = comment.get("body")
             if not body:
                 continue
+            
             codes = extract_codes_from_body(body)
             if not codes:
                 continue
-
+            
             created_utc = float(comment.get("created_utc") or now)
             permalink = comment.get("permalink")
             if permalink and permalink.startswith("/"):
                 permalink = f"https://www.reddit.com{permalink}"
-
+            
             for code in codes:
                 if code in _codes:
                     continue
+                    
                 entry = CodeEntry(
                     code=code,
                     comment_id=comment.get("id", ""),
@@ -219,33 +264,36 @@ async def scan_reddit_source(client: httpx.AsyncClient, url: str, now: float) ->
                 )
                 _codes[code] = entry
                 new_codes.append(entry)
+                
+        if new_codes:
+            logger.info(f"Encontrados {len(new_codes)} códigos novos em {url[:80]}")
+            
     except Exception as exc:
-        logger.warning(f"Failed to scan Reddit source {url}: {exc}")
-
+        logger.warning(f"Falha ao escanear {url[:80]}: {exc}")
+    
     return new_codes
 
 
 async def scan_twitter_source(client: httpx.AsyncClient, url: str, now: float) -> List[CodeEntry]:
-    """Scan Twitter/X for codes (requires ScraperAPI or similar)."""
+    """Escaneia Twitter/X (requer ScraperAPI)"""
     new_codes: list[CodeEntry] = []
-
+    
     if not SCRAPE_DO_TOKEN:
-        logger.warning("Twitter scanning requires SCRAPE_DO_TOKEN")
+        logger.warning("Twitter requer SCRAPE_DO_TOKEN")
         return new_codes
-
+    
     try:
-        # Twitter requires more sophisticated scraping
         target_url = f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
-        response = await client.get(target_url)
+        response = await client.get(target_url, timeout=20)
         response.raise_for_status()
-
-        # Extract codes from Twitter HTML/JSON
+        
         text = response.text
         codes = extract_codes_from_body(text)
-
+        
         for code in codes:
             if code in _codes:
                 continue
+                
             entry = CodeEntry(
                 code=code,
                 comment_id="",
@@ -256,56 +304,66 @@ async def scan_twitter_source(client: httpx.AsyncClient, url: str, now: float) -
             )
             _codes[code] = entry
             new_codes.append(entry)
+            
     except Exception as exc:
-        logger.warning(f"Failed to scan Twitter source {url}: {exc}")
-
+        logger.warning(f"Falha ao escanear Twitter {url}: {exc}")
+    
     return new_codes
 
 
 async def scan_once() -> List[CodeEntry]:
     global _last_fetch
+    
+    new_codes: list[CodeEntry] = []
+    now = time.time()
+    
+    # Headers base
     headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
         "DNT": "1",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
     }
-
-    new_codes: list[CodeEntry] = []
-    now = time.time()
-
-    async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
-        # Scan all Reddit sources
+    
+    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
+        # Escanear fontes do Reddit
         for thread_url in THREAD_URLS:
             thread_url = thread_url.strip()
             if not thread_url:
                 continue
-            logger.info(f"Scanning Reddit source: {thread_url}")
+                
+            logger.info(f"Escaneando Reddit: {thread_url[:80]}...")
             codes = await scan_reddit_source(client, thread_url, now)
             new_codes.extend(codes)
-
-        # Scan Twitter sources if configured
+            
+            # Pequeno delay entre requisições
+            await asyncio.sleep(0.5)
+        
+        # Escanear Twitter se configurado
         for twitter_url in TWITTER_SEARCH_URLS:
             twitter_url = twitter_url.strip()
             if not twitter_url:
                 continue
-            logger.info(f"Scanning Twitter source: {twitter_url}")
+                
+            logger.info(f"Escaneando Twitter: {twitter_url}")
             codes = await scan_twitter_source(client, twitter_url, now)
             new_codes.extend(codes)
-
+    
+    # Atualizar lista ordenada
     if new_codes:
         _ordered_codes.extend(new_codes)
         _ordered_codes.sort(key=lambda item: item.first_seen, reverse=True)
+        
         if len(_ordered_codes) > MAX_CODES:
             for entry in _ordered_codes[MAX_CODES:]:
                 _codes.pop(entry.code, None)
             del _ordered_codes[MAX_CODES:]
-
+    
     _last_fetch = time.time()
-    logger.info(f"Scan complete. Found {len(new_codes)} new codes from {len(THREAD_URLS)} sources")
+    logger.info(f"Scan completo: {len(new_codes)} códigos novos de {len(THREAD_URLS)} fontes")
+    
     return new_codes
 
 
@@ -325,13 +383,13 @@ async def scanner_loop() -> None:
         try:
             async with _results_lock:
                 await scan_once()
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Scanner iteration failed: %s", exc)
-
-        # Add random jitter to avoid pattern detection
-        jitter = random.uniform(0, 10)
+        except Exception as exc:
+            logger.exception("Erro no scanner: %s", exc)
+        
+        # Jitter aleatório para evitar padrões
+        jitter = random.uniform(0, 5)
         sleep_time = FETCH_INTERVAL_SECONDS + jitter
-        logger.info(f"Next scan in {sleep_time:.1f}s")
+        logger.info(f"Próximo scan em {sleep_time:.1f}s")
         await asyncio.sleep(sleep_time)
 
 
@@ -340,6 +398,7 @@ async def startup_event() -> None:
     global _scanner_task
     if _scanner_task is None:
         _scanner_task = asyncio.create_task(scanner_loop())
+        logger.info("Scanner iniciado!")
 
 
 @app.on_event("shutdown")
@@ -369,19 +428,18 @@ async def manual_scan() -> CodesResponse:
 
 @app.get("/api/health")
 async def healthcheck() -> JSONResponse:
-    return JSONResponse(
-        {
-            "status": "ok",
-            "codes_cached": len(_ordered_codes),
-            "last_fetch": _last_fetch,
-            "interval_seconds": FETCH_INTERVAL_SECONDS,
-        }
-    )
+    return JSONResponse({
+        "status": "ok",
+        "codes_cached": len(_ordered_codes),
+        "last_fetch": _last_fetch,
+        "interval_seconds": FETCH_INTERVAL_SECONDS,
+        "scraper_enabled": bool(SCRAPE_DO_TOKEN),
+    })
 
 
 @app.get("/")
 async def serve_index() -> FileResponse:
     index_file = STATIC_DIR / "index.html"
     if not index_file.exists():
-        raise HTTPException(status_code=404, detail="Frontend build not found")
+        raise HTTPException(status_code=404, detail="Frontend não encontrado")
     return FileResponse(index_file)
