@@ -32,7 +32,7 @@ STATIC_DIR = ROOT_DIR / "static"
 # Support multiple sources - can be comma-separated URLs
 THREAD_URLS = os.getenv(
     "THREAD_URLS",
-    "https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread,"
+    "https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/"
     "https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,"
     "https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week"
 ).split(",")
