@@ -66,7 +66,7 @@ git push -u origin main
    Add these if needed:
    ```
    # Multiple Reddit sources (comma-separated)
-   THREAD_URLS = https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week
+   THREAD_URLS = [https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/](https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week
 
    # Twitter/X sources (optional, requires SCRAPE_DO_TOKEN)
    TWITTER_SEARCH_URLS = https://x.com/search?q=sora+invite+code&f=live
