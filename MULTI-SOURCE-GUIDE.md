@@ -18,7 +18,7 @@ By default, the app scans these 3 Reddit sources:
 
 1. **Original Megathread**
    ```
-   https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/
+   https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/
    ```
 
 2. **r/OpenAI Search** (last week)
@@ -259,7 +259,7 @@ WARNING: Failed to scan Reddit source https://...: 403 Forbidden
 
 ```bash
 # Multiple Reddit sources for redundancy
-THREAD_URLS=https://www.reddit.com/r/OpenAI/comments/1nukmm2/megathread/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week
+THREAD_URLS=https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite+code&restrict_sr=1&sort=new&t=week,https://www.reddit.com/r/sora/search.json?q=invite+code&restrict_sr=1&sort=new&t=week
 
 # ScraperAPI for bypassing blocks
 SCRAPE_DO_TOKEN=your_token_here
@@ -297,7 +297,7 @@ THREAD_URL=https://www.reddit.com/r/OpenAI/comments/1nukmm2/megathread/
 ### New Configuration (Current)
 
 ```bash
-THREAD_URLS=https://www.reddit.com/r/OpenAI/comments/1nukmm2/megathread/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite
+THREAD_URLS=https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/,https://www.reddit.com/r/OpenAI/search.json?q=sora+invite
 ```
 
 **Note:** The old `THREAD_URL` variable is no longer used. Use `THREAD_URLS` (plural).
