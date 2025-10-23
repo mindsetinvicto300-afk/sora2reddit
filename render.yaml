@@ -10,6 +10,6 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.0
       - key: THREAD_URL
-        value: https://www.reddit.com/r/OpenAI/comments/1nukmm2/open_ai_sora_2_invite_codes_megathread/
+        value: https://www.reddit.com/r/OpenAI/comments/1o8kmg9/sora_2_megathread_part_3/
       - key: FETCH_INTERVAL_SECONDS
         value: 30
