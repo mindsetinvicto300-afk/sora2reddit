@@ -43,7 +43,6 @@ MAX_CODES = int(os.getenv("MAX_CODES", "200"))
 CODE_PATTERN = re.compile(r"\b[0-9A-Za-z]{6}\b")
 BLACKLIST = {word.upper() for word in DEFAULT_BLACKLIST}
 
-# User agents rotativos para evitar detecção
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -76,13 +75,12 @@ def ensure_json_url(url: str) -> str:
     url = url.strip()
     if url.endswith(".json") or ".json?" in url:
         return url
-    # Remove trailing slash antes de adicionar .json
     url = url.rstrip("/")
     return f"{url}.json"
 
 
 def normalize_reddit_url(url: str) -> str:
-    """Converte para old.reddit.com que é menos restritivo"""
+    """Converte para old.reddit.com"""
     url = url.replace("www.reddit.com", "old.reddit.com")
     url = url.replace("reddit.com", "old.reddit.com")
     return ensure_json_url(url)
@@ -103,59 +101,52 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
     """Busca JSON do Reddit com múltiplos fallbacks"""
     url = normalize_reddit_url(url)
     
-    # Lista de métodos de proxy em ordem de preferência
     proxy_methods = []
     
-    # ScraperAPI é a melhor opção se disponível
+    # ScraperAPI primeiro (se disponível)
     if SCRAPE_DO_TOKEN:
         proxy_methods.append(
             ("ScraperAPI", f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}")
         )
     
-    # Proxies CORS como fallback
+    # Proxies CORS públicos
     proxy_methods.extend([
         ("AllOrigins", f"https://api.allorigins.win/raw?url={quote_plus(url)}"),
+        ("CORS.SH", f"https://cors.sh/{url}"),
+        ("CorsProxy", f"https://corsproxy.io/?{quote_plus(url)}"),
         ("ThingProxy", f"https://thingproxy.freeboard.io/fetch/{url}"),
-        ("CORS-Anywhere", f"https://corsproxy.io/?{quote_plus(url)}"),
     ])
     
-    # Tentar direto como último recurso
+    # Direto como último recurso
     proxy_methods.append(("Direct", url))
     
     last_error = None
     
     for proxy_name, target_url in proxy_methods:
         try:
-            # User agent aleatório
             user_agent = random.choice(USER_AGENTS)
             headers = {
                 "User-Agent": user_agent,
                 "Accept": "application/json, text/html, */*",
                 "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
                 "DNT": "1",
                 "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
             }
             
-            logger.info(f"Tentando {proxy_name} para {url[:80]}...")
+            logger.info(f"Tentando {proxy_name} para {url[:60]}...")
             
             response = await client.get(
                 target_url,
                 headers=headers,
-                timeout=20,
+                timeout=25,
                 follow_redirects=True
             )
             response.raise_for_status()
             
             # Processar resposta
             content = response.content
-            text = None
             
-            # Descomprimir se for gzip
+            # Descomprimir gzip se necessário
             if content and content[:2] == b'\x1f\x8b':
                 try:
                     text = gzip.decompress(content).decode('utf-8')
@@ -165,15 +156,14 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
                 text = response.text
             
             if not text or not text.strip():
-                logger.warning(f"{proxy_name} retornou resposta vazia")
+                logger.warning(f"{proxy_name} retornou vazio")
                 continue
             
             # Parse JSON
             try:
                 payload = json.loads(text)
-            except json.JSONDecodeError as je:
-                preview = text[:200].encode('unicode_escape').decode('ascii')
-                logger.warning(f"{proxy_name} retornou JSON inválido: {preview}")
+            except json.JSONDecodeError:
+                logger.warning(f"{proxy_name} JSON inválido")
                 continue
             
             # Validar estrutura
@@ -184,30 +174,25 @@ async def fetch_thread_json(client: httpx.AsyncClient, url: str) -> Dict[str, An
                 logger.info(f"✓ {proxy_name} funcionou!")
                 return payload
             else:
-                logger.warning(f"{proxy_name} retornou estrutura inesperada")
+                logger.warning(f"{proxy_name} estrutura inesperada")
                 continue
                 
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
-            logger.warning(f"{proxy_name} falhou com {status}")
+            logger.warning(f"{proxy_name} falhou com status {status}")
             last_error = e
-            
-            # Se for 429 (rate limit), esperar um pouco
             if status == 429:
                 await asyncio.sleep(2)
             continue
             
         except Exception as e:
-            logger.warning(f"{proxy_name} falhou: {type(e).__name__}: {str(e)[:100]}")
+            logger.warning(f"{proxy_name} erro: {type(e).__name__}")
             last_error = e
             continue
     
-    # Todos os métodos falharam
-    error_msg = f"Todos os proxies falharam para {url[:80]}"
-    if last_error:
-        error_msg += f" - Último erro: {last_error}"
-    logger.error(error_msg)
-    raise HTTPException(status_code=502, detail="Todos os métodos de proxy falharam")
+    # Todos falharam
+    logger.error(f"Todos proxies falharam para {url[:60]}")
+    raise HTTPException(status_code=502, detail="Todos proxies falharam")
 
 
 def iter_comments(children: Iterable[Dict[str, Any]]) -> Iterable[Dict[str, Any]]:
@@ -266,10 +251,10 @@ async def scan_reddit_source(client: httpx.AsyncClient, url: str, now: float) ->
                 new_codes.append(entry)
                 
         if new_codes:
-            logger.info(f"Encontrados {len(new_codes)} códigos novos em {url[:80]}")
+            logger.info(f"✓ {len(new_codes)} códigos novos em {url[:60]}")
             
     except Exception as exc:
-        logger.warning(f"Falha ao escanear {url[:80]}: {exc}")
+        logger.warning(f"Falha ao escanear {url[:60]}: {exc}")
     
     return new_codes
 
@@ -279,12 +264,11 @@ async def scan_twitter_source(client: httpx.AsyncClient, url: str, now: float) -
     new_codes: list[CodeEntry] = []
     
     if not SCRAPE_DO_TOKEN:
-        logger.warning("Twitter requer SCRAPE_DO_TOKEN")
         return new_codes
     
     try:
         target_url = f"http://api.scraperapi.com?api_key={SCRAPE_DO_TOKEN}&url={quote_plus(url)}"
-        response = await client.get(target_url, timeout=20)
+        response = await client.get(target_url, timeout=20, verify=False)
         response.raise_for_status()
         
         text = response.text
@@ -306,7 +290,7 @@ async def scan_twitter_source(client: httpx.AsyncClient, url: str, now: float) -
             new_codes.append(entry)
             
     except Exception as exc:
-        logger.warning(f"Falha ao escanear Twitter {url}: {exc}")
+        logger.warning(f"Falha Twitter {url}: {exc}")
     
     return new_codes
 
@@ -317,41 +301,42 @@ async def scan_once() -> List[CodeEntry]:
     new_codes: list[CodeEntry] = []
     now = time.time()
     
-    # Headers base
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
-        "Accept-Encoding": "gzip, deflate, br",
         "DNT": "1",
         "Connection": "keep-alive",
     }
     
-    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
-        # Escanear fontes do Reddit
+    # Cliente HTTP com SSL desabilitado
+    async with httpx.AsyncClient(
+        timeout=25,
+        headers=headers,
+        follow_redirects=True,
+        verify=False  # Desabilita verificação SSL
+    ) as client:
+        # Escanear Reddit
         for thread_url in THREAD_URLS:
             thread_url = thread_url.strip()
             if not thread_url:
                 continue
                 
-            logger.info(f"Escaneando Reddit: {thread_url[:80]}...")
+            logger.info(f"Escaneando: {thread_url[:60]}...")
             codes = await scan_reddit_source(client, thread_url, now)
             new_codes.extend(codes)
-            
-            # Pequeno delay entre requisições
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
         
-        # Escanear Twitter se configurado
+        # Escanear Twitter
         for twitter_url in TWITTER_SEARCH_URLS:
             twitter_url = twitter_url.strip()
             if not twitter_url:
                 continue
                 
-            logger.info(f"Escaneando Twitter: {twitter_url}")
             codes = await scan_twitter_source(client, twitter_url, now)
             new_codes.extend(codes)
     
-    # Atualizar lista ordenada
+    # Atualizar lista
     if new_codes:
         _ordered_codes.extend(new_codes)
         _ordered_codes.sort(key=lambda item: item.first_seen, reverse=True)
@@ -362,7 +347,7 @@ async def scan_once() -> List[CodeEntry]:
             del _ordered_codes[MAX_CODES:]
     
     _last_fetch = time.time()
-    logger.info(f"Scan completo: {len(new_codes)} códigos novos de {len(THREAD_URLS)} fontes")
+    logger.info(f"✓ Scan completo: {len(new_codes)} novos de {len(THREAD_URLS)} fontes")
     
     return new_codes
 
@@ -379,17 +364,20 @@ def _prune_invalid_entries() -> None:
 
 
 async def scanner_loop() -> None:
+    """Loop principal do scanner"""
+    logger.info("🚀 Scanner iniciado!")
+    
     while True:
         try:
             async with _results_lock:
                 await scan_once()
         except Exception as exc:
-            logger.exception("Erro no scanner: %s", exc)
+            logger.exception("❌ Erro no scanner: %s", exc)
         
-        # Jitter aleatório para evitar padrões
+        # Intervalo com jitter
         jitter = random.uniform(0, 5)
         sleep_time = FETCH_INTERVAL_SECONDS + jitter
-        logger.info(f"Próximo scan em {sleep_time:.1f}s")
+        logger.info(f"⏱️  Próximo scan em {sleep_time:.1f}s")
         await asyncio.sleep(sleep_time)
 
 
@@ -398,7 +386,6 @@ async def startup_event() -> None:
     global _scanner_task
     if _scanner_task is None:
         _scanner_task = asyncio.create_task(scanner_loop())
-        logger.info("Scanner iniciado!")
 
 
 @app.on_event("shutdown")
@@ -434,6 +421,7 @@ async def healthcheck() -> JSONResponse:
         "last_fetch": _last_fetch,
         "interval_seconds": FETCH_INTERVAL_SECONDS,
         "scraper_enabled": bool(SCRAPE_DO_TOKEN),
+        "sources": len(THREAD_URLS),
     })
 
 
